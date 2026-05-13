@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=KDE Computer-Use MCP Server
+GenericName=Desktop Automation Server
+Comment=MCP server for KDE Plasma 6 desktop control
+Icon=preferences-desktop
+TryExec=kde-mcp
+Exec=kde-mcp
+NoDisplay=true
+Categories=Utility;Accessibility;
+
+# Authorize this binary to call the org.kde.KWin.ScreenShot2 D-Bus interface.
+# KWin's KApplicationTrader check looks up the binary's .desktop file and
+# refuses screenshot calls if this list is missing.
+# See https://invent.kde.org/plasma/kwin/-/merge_requests/759
+X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2

@@ -1,0 +1,29 @@
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock.bak
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.zed/
+.helix/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime state (audit logs, sockets, temp captures)
+state/
+*.log
+*.jsonl
+/tmp-*/
+
+# Local config overrides
+.envrc
+config.local.toml
+
+# Snap test fixtures
+tests/snapshots/*.actual.png
