@@ -249,13 +249,37 @@ On `SIGTERM`/`SIGINT`/stdin EOF:
 
 ## 6. Tool catalogue
 
-15 tools. Read-only set (8) auto-approves under Claude Code's default permission mode; destructive set (7) triggers approval prompts.
+15 tools. Read-only set (8) auto-approves under Claude Code's default permission mode; destructive set (7) triggers approval prompts and additionally passes through the policy gate (§6.0).
 
 All tools accept their parameters as the MCP `arguments` object; all return either:
 - `{ content: [{ type: "text", text: "..." }, ...], structuredContent: {...}, isError: false }` on success
 - `{ content: [...], structuredContent: { code, ...details }, isError: true }` on semantic failure
 
 JSON-RPC protocol errors are reserved for malformed arguments only.
+
+### 6.0 The policy gate (cross-cutting)
+
+Every destructive tool call passes through a shared policy gate before any side effect is dispatched. The gate is implemented once (in `src/policy.rs`) and wraps each destructive handler:
+
+1. **Mode lock check** — the process must hold its mode's lock (`$XDG_RUNTIME_DIR/kde-mcp/live.lock` or `virtual.lock`). Acquired at startup, released at exit. Stale-lock detection via PID liveness. Failure → `lock_unavailable`.
+2. **Cancellation check** — if the global-shortcut-driven `CancellationToken` is set (user pressed `Meta+Esc`), abort immediately. Failure → `cancelled`. Token is rechecked between every libei event, every OCR page, every D-Bus call so long-running tools surrender quickly.
+3. **Target-app resolution** — derives the target app class from tool args:
+   - `act_on_element` / `window_control` → from the ref's owning window
+   - `mouse` → KWin-script query "window at coordinate"
+   - `keyboard` → currently-focused window's class
+   - `bash` / `text_editor_edit` / `clipboard_write` → not per-app; gate steps 4–5 skipped
+4. **Tier check** — table-driven (`~/.config/kde-mcp/policy.toml`). Three tiers:
+   - `view_only` (browsers, trading platforms) — destructive tools rejected → `tier_restricted`
+   - `click_only` (terminals, IDEs) — `keyboard.type` rejected; `keyboard.key` accepts only a navigation allowlist (`Tab`, `Return`, `Escape`, `Page_Up`/`Down`, `Home`/`End`, arrow keys, modifier combos like `Ctrl+C`/`Ctrl+V` allowed but not `Ctrl+Shift+T` / arbitrary chords); `mouse.click`/`scroll`/`drag` allowed
+   - `full` (default) — no tier restriction
+5. **Approval check** — first destructive tool targeting a not-yet-approved app:
+   - Returns `isError: true, code: "app_approval_required", details: { app_class, app_title, requested_action, current_tier, sentinel_warning?, notification_id }`
+   - In parallel, fires `org.freedesktop.Notifications.Notify` with actions `Allow once` / `Allow this session` / `Deny`. The notification's `app_id` is `kde-mcp` so it surfaces in KDE's notification UI consistently.
+   - User picks → in-memory `HashMap<app_class, ApprovalState>` updated. Agent retries the tool; gate now passes.
+   - If agent retries before user clicks: returns the same error with `still_pending: true`. Agent uses `wait { seconds: 2 }` between retries.
+6. **Sentinel warning emission** — if the target app's tier table marks `sentinel: "shell_access" | "filesystem_access" | "system_settings"`, the response carries `warnings: ["target_app:konsole — equivalent to shell access"]`. Visible to the model and the user without blocking the action.
+
+The gate is the only entry point to side effects. New destructive tools added later inherit all six steps for free.
 
 ### 6.1 Read-only tools (8)
 
@@ -642,6 +666,10 @@ Every error returns `{ isError: true, structuredContent: { code, ...details } }`
 | `not_actionable` | AT-SPI action returned false / element doesn't support requested action | `available_actions`, `fallback_suggestion` |
 | `target_not_found` | match criteria didn't resolve | `closest_match` (best near-miss) |
 | `permission_denied` | server blocklist or KWin refusal | `reason` |
+| `tier_restricted` | target app's tier disallows this action (§6.0 step 4) | `app_class`, `current_tier`, `allowed_actions` |
+| `app_approval_required` | target app not yet approved this session (§6.0 step 5) | `app_class`, `notification_id`, `still_pending?` |
+| `cancelled` | user invoked the cancel shortcut (`Meta+Esc`) | `cancelled_at_stage` |
+| `lock_unavailable` | another `kde-mcp` of this mode already holds the lock | `holder_pid`, `lock_path` |
 | `timeout` | `wait` deadline | `closest_match`, `current_windows` |
 | `input_dispatch_failed` | libei call errored | retried once internally; if surfaced, `libei_version`, `kwin_version` in details |
 | `external_command_failed` | tesseract/wl-copy/etc. nonzero exit | `stderr` |
@@ -674,17 +702,31 @@ The audit log is local-only. No telemetry, no phone-home, no opentelemetry endpo
 
 ## 10. Safety model
 
-The MCP server does not implement a parallel confirmation system. It cooperates with the host's permission mode (Claude Code's `default` / `acceptEdits` / `bypassPermissions` / `plan`) via correct annotations.
+The MCP server cooperates with the host's permission mode (Claude Code's `default` / `acceptEdits` / `bypassPermissions` / `plan`) via correct annotations. **In addition**, it implements its own gate (§6.0) inspired by Anthropic's `computer-use` safety architecture; the two layers compose.
 
-Five layers:
+Eight layers:
 
 1. **Honest tool annotations.** `readOnlyHint: true` on the 8 observation tools; `destructiveHint: true` on the 7 mutating tools. `openWorldHint: true` on `bash`. Hosts use these to decide which to auto-allow vs. prompt.
-2. **Audit log always on.** Local JSONL; `tail -f` for live review.
-3. **Server-side hard blocklist for `bash`.** Cannot be disabled via MCP arguments (only via launch-time config). Patterns: `rm -rf /`, `rm -rf ~`, `dd of=/dev/sd*`, `mkfs.*`, `:(){:|:&};:`, raw `sudo` (unless `--allow-sudo` config).
-4. **Sensitive-path warnings (not blocks).** `text_editor_edit` and `bash` responses include `warnings: ["..."]` when touching `~/.ssh/`, `~/.gnupg/`, `/etc/`, `~/.config/keepassxc/`, `~/.config/git/`, `~/.aws/`, `~/.kube/`. The host's permission mode decides whether to escalate.
-5. **Trust wrappers on external strings.** Any model-readable text from window content / clipboard read / OCR / bash stdout / file content carries `trust: "external"`. The agent sees data marked as data, not as instructions. This is the structural defense against prompt injection from screen content.
+2. **Audit log always on.** Local JSONL; `tail -f` for live review. Every gate decision (approval grant, tier rejection, cancellation) is also logged.
+3. **Single-session lock per mode.** `$XDG_RUNTIME_DIR/kde-mcp/<mode>.lock` (POSIX flock). Two `kde-mcp --mode=live` cannot run simultaneously; two `--mode=virtual` cannot either; one of each is allowed. Lock acquired at startup, released on exit. Stale-lock detection via PID liveness check. Notifications via `org.freedesktop.Notifications` on acquire ("Claude is using your computer · press Meta+Esc to stop") and release ("Claude finished using your computer").
+4. **Per-app approval per session** (gate step 5). First destructive tool against a not-yet-approved app returns `app_approval_required` and fires a notification with `Allow once` / `Allow this session` / `Deny` action buttons. State is in-memory, lost on process restart.
+5. **App-category tiering** (gate step 4). `view_only` (browsers): destructive tools blocked. `click_only` (terminals, IDEs): typing blocked, click/navigation allowed. `full`: default. Table at `~/.config/kde-mcp/policy.toml`, user-overridable. Tier rejection returns `tier_restricted`.
+6. **Sentinel warnings** (gate step 6). When a destructive action targets an app marked with a sentinel (`shell_access`, `filesystem_access`, `system_settings`), the response carries `warnings: [...]`. Non-blocking; informational for both the model and the user.
+7. **Terminal-excluded screenshots.** When `screenshot` is invoked, terminal-class windows (`konsole`, `yakuake`, `alacritty`, `kitty`, `wezterm`, `foot`, `ghostty`, `tilix`, `gnome-terminal`, `xterm`, `xfce4-terminal`, `ptyxis`, `warp-terminal`, …) are detected via KWin Scripting and their geometry is overwritten with a solid black rectangle + `[terminal masked]` label before the PNG is returned. Defense against on-screen content in the agent's own terminal feeding back as prompt injection. Config-overridable per class.
+8. **Server-side hard blocklist for `bash`.** Cannot be disabled via MCP arguments (only via launch-time config). Patterns: `rm -rf /`, `rm -rf ~`, `dd of=/dev/sd*`, `mkfs.*`, `:(){:|:&};:`, raw `sudo`/`pkexec` (unless `--allow-sudo` config).
+9. **Sensitive-path warnings (not blocks).** `text_editor_edit` and `bash` responses include `warnings: [...]` when touching `~/.ssh/`, `~/.gnupg/`, `/etc/`, `~/.config/keepassxc/`, `~/.config/git/`, `~/.aws/`, `~/.kube/`. The host's permission mode decides whether to escalate.
+10. **Trust wrappers on external strings.** Any model-readable text from window content / clipboard read / OCR / bash stdout / file content carries `trust: "external"`. The agent sees data marked as data, not as instructions. Structural defense that the agent cannot override.
+11. **Global cancel shortcut.** `Meta+Esc` (default; configurable) registered via KDE's KGlobalAccel D-Bus interface. KWin grabs the key at the compositor level — apps don't see it (so prompt injection cannot dismiss it). On press, every in-flight tool aborts at the next safe point and returns `cancelled`. A KDE notification appears: "Claude aborted by user."
 
-**No mid-call `elicitation/create` prompts** in MVP. They are inconsistently supported by clients and would override the user's chosen Claude Code mode.
+**No mid-call `elicitation/create` prompts** in MVP — they're inconsistently supported by clients and would override the user's chosen permission mode. The per-app approval notification (#4) replaces this with an OS-level UI that integrates with KDE's notification flow.
+
+### What we explicitly do not have
+
+| Anthropic feature | Our substitute | Rationale |
+|---|---|---|
+| Server-side prompt-injection classifier | Trust wrappers (#10) + sensitive-path warnings (#9) + per-app approval (#4) | We lack classifier weights and training data; cannot reproduce |
+| Apps hidden while Claude works | Per-app approval (#4) + tier restriction (#5) | Requires host-level turn awareness we don't have as an external MCP server; substitute restricts what Claude can *touch* even if it can *see* other apps |
+| Bundled-with-host install | `.mcpb` extension bundle + `claude plugin install` registration | We're not Anthropic; one-command install is the closest we can get |
 
 ---
 
@@ -757,10 +799,14 @@ kde-mcp/
 │   ├── main.rs                   # CLI parse, mode bootstrap, tokio init, rmcp serve
 │   ├── lib.rs                    # module declarations
 │   ├── config.rs                 # CLI + ~/.config/kde-mcp/config.toml
-│   ├── audit.rs                  # JSONL audit logger
+│   ├── audit.rs                  # JSONL audit logger (also logs gate decisions)
 │   ├── error.rs                  # Error taxonomy → MCP responses
 │   ├── refs.rs                   # opaque ref encoding + TTL validation set
 │   ├── trust.rs                  # trust wrappers on external strings
+│   ├── policy.rs                 # the policy gate (§6.0): lock + cancel + tier + approval + sentinel
+│   ├── lock.rs                   # single-session lockfile per mode
+│   ├── notify.rs                 # org.freedesktop.Notifications client (approval prompts + lock events)
+│   ├── cancel.rs                 # KGlobalAccel registration + CancellationToken broadcast
 │   ├── mode/
 │   │   ├── mod.rs
 │   │   ├── live.rs               # connect to user session
@@ -791,7 +837,7 @@ kde-mcp/
 │   │   └── text_editor.rs        # text_editor_view + text_editor_edit
 │   └── util/
 │       ├── mod.rs
-│       ├── image.rs              # ARGB→PNG, resize, scale-factor math
+│       ├── image.rs              # ARGB→PNG, resize, scale-factor math, terminal-mask overlay
 │       └── pty.rs                # persistent bash session
 ├── packaging/
 │   ├── kde-mcp.desktop
@@ -826,14 +872,15 @@ Each phase ends with a usable binary.
 
 | Phase | Scope | Est. days |
 |-------|-------|-----------|
-| 0 | Skeleton: `cargo new`, rmcp wiring, `--mode` flag, audit log, error taxonomy, all 15 tools stubbed to return `not_implemented`. Verifies the binary appears in Claude Code's MCP list with the right tool inventory. | 1 |
-| 1 | Read-only against live: `observe`, `inspect`, `window_query`, `screenshot`, `clipboard_read`, `text_editor_view`. Highest-value subset for "look at my screen and tell me what's wrong" workflows. | 3–4 |
+| 0 | Skeleton: `cargo new`, rmcp wiring, `--mode` flag, audit log, error taxonomy, single-session lock + KDE notifications on acquire/release, all 15 tools stubbed to return `not_implemented`. Verifies the binary appears in Claude Code's MCP list with the right tool inventory. | 1.5 |
+| 1 | Read-only against live: `observe`, `inspect`, `window_query`, `screenshot` (with terminal-excluded masking), `clipboard_read`, `text_editor_view`. Highest-value subset for "look at my screen and tell me what's wrong" workflows. | 4–5 |
 | 2 | Input against live: `mouse`, `keyboard`, `clipboard_write`, `act_on_element`. Wire reis to KWin EIS fd. Smoke test: agent does "open kcalc, type 2+3, press =, read the result." | 3–4 |
-| 3 | Shell + edit + wait + OCR: `bash`, `text_editor_edit`, `wait`, `read_text`, `window_control`. All compositor-independent or KWin-scripting-only. Anthropic-quickstart-equivalent parity reached for live mode. | 2–3 |
-| 4 | Virtual mode: bootstrap of `dbus-run-session` + `kwin_wayland --virtual` + `at-spi-bus-launcher` + `wayvnc`. All tools work against virtual via the same code paths. Distro-specific AT-SPI bootstrap (kwin-mcp issue #14 lesson). | 3–5 |
-| 5 | Polish: sensitive-path warnings, blocklist tuning, trust-wrapper coverage audit, tool-description tuning, audit-log rotation, signal-handling cleanup. | open-ended |
+| 3 | **Safety policy gate (§6.0)**: `src/policy.rs`, tier table at `~/.config/kde-mcp/policy.toml`, sentinel warnings, per-app approval via `org.freedesktop.Notifications` action buttons, `Meta+Esc` global shortcut via KGlobalAccel + `CancellationToken` plumbing through all destructive tools. | 4–5 |
+| 4 | Shell + edit + wait + OCR: `bash`, `text_editor_edit`, `wait`, `read_text`, `window_control`. Each goes through the policy gate where applicable. Anthropic-quickstart-equivalent parity reached for live mode. | 2–3 |
+| 5 | Virtual mode: bootstrap of `dbus-run-session` + `kwin_wayland --virtual` + `at-spi-bus-launcher` + `wayvnc`. All tools work against virtual via the same code paths (the policy gate applies identically). Distro-specific AT-SPI bootstrap (kwin-mcp issue #14 lesson). | 3–5 |
+| 6 | Polish: sensitive-path warnings tuning, blocklist refinement, trust-wrapper coverage audit, tool-description tuning, audit-log rotation, signal-handling cleanup, policy.toml example with sensible defaults, install scripts (`.mcpb` packaging research). | open-ended |
 
-Total realistic: 3–4 calendar weeks for a single developer at part-time pace.
+Total realistic: 5–7 calendar weeks for a single developer at part-time pace. Day-count: 18–23 working days for phases 0–5, plus polish.
 
 ---
 
@@ -844,7 +891,9 @@ Things the design deliberately does not commit to in MVP:
 - **Journey tools** (`save_current_document()`, `open_app_and_wait_until_ready()`). Worth considering once primitives are exercised and repeating sequences are observed. Premature now.
 - **CLI+Skills delivery** alongside MCP. Microsoft's Playwright team has recently argued CLI+Skill is more token-efficient than MCP for some workflows. Out of scope for v1 (user explicitly chose MCP), but a v2 question.
 - **Streamable-HTTP transport** for remote driving. ~500 LOC; deferred until a real use case appears.
-- **Elicitation prompts** for destructive actions. Client support uneven; would override host permission mode. Reconsider once Claude Code's elicitation support stabilises.
+- **Elicitation prompts** for destructive actions. Replaced by the per-app approval flow via `org.freedesktop.Notifications` (§10 layer 4) which integrates with KDE's native UI. The MCP `elicitation/create` path may be revisited when client support stabilises, as a host-fallback when the user isn't on KDE notifications.
+- **Persistent approval state across sessions.** Currently per-process / per-session. A `~/.local/state/kde-mcp/approvals.json` with TTL could persist "Allow this app forever" decisions. Out of MVP scope.
+- **App-category tier auto-discovery.** The `policy.toml` table is hand-maintained for MVP. Eventually we could heuristically tier unknown apps (any app whose class matches `*terminal*` or `*-shell` → click_only, etc.) or pull from a community-maintained list.
 - **Multi-compositor.** GNOME via Mutter portal-based RemoteDesktop, wlroots via virtual-pointer/virtual-keyboard. Each adds substantial backend code; out of scope for v1.
 - **Server-mode authentication** for streamable-HTTP (if ever added).
 

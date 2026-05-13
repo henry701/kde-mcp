@@ -14,6 +14,7 @@ Format: 1-2 pages each. Sections: Status · Context · Decision · Consequences 
 | 0004 | Response-as-instruction over prompt-prose | Accepted |
 | 0005 | Accessibility-tree first; pixels as fallback | Accepted |
 | 0006 | 15 tools split read/write; no Anthropic-style omni-tool | Accepted |
+| 0007 | Adopt Anthropic computer-use safety architecture (policy gate) | Accepted |
 
 ## When to add an ADR
 
