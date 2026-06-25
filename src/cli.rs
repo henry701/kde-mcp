@@ -55,8 +55,9 @@ pub struct Cli {
     pub vnc: Option<u16>,
 
     /// Wire transport. `stdio` (default) is one-client-per-process over
-    /// stdin/stdout; `daemon` is a long-running HTTP server on
-    /// `127.0.0.1:7575` activated by systemd-user. See ADR-0012.
+    /// stdin/stdout; `http` and `unix` run the long-running daemon (HTTP
+    /// on `127.0.0.1:7575`, or a Unix domain socket) activated by
+    /// systemd-user. See ADR-0012.
     #[arg(long, value_enum, default_value_t = Transport::Stdio)]
     pub transport: Transport,
 }

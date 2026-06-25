@@ -20,7 +20,6 @@ These are tied or substantively equivalent:
 - **Global cancel shortcut, key consumed.** Theirs: Esc. Ours: `Meta+Esc` (config-overridable). Both grab at compositor level so apps don't see the key.
 - **MCP-as-protocol.** Standard MCP over stdio; works with any compliant host.
 - **Screenshot downscaling.** Theirs auto-downscales (e.g. 3456×2234 → ~1372×887). Ours configurable via `max_long_edge`, default 1280.
-- **Bash and text-editor semantics.** Essentially identical surface.
 
 ---
 
@@ -127,7 +126,7 @@ Anthropic ships `computer-use` inside the Claude Code binary; users enable via `
 
 **Anthropic's strength** is the host integration depth — per-app approval that's built into the terminal flow, app hiding, server-side classifier, bundled install. These are *product engineering features* that come from controlling the host. After ADR-0007 we replicate most of the user-visible safety surface, but their server-side classifier and host-level app hiding are genuinely uncompetable.
 
-**kde-mcp's strength** is the agent-facing tool surface — accessibility-tree primacy, response-diffs, trust-wrappers, ref-based poka-yoke, structured waits, virtual sandbox, extensible architecture. These are *agent engineering features* that come from optimising for the model's attention budget rather than the user's UI flow.
+**kde-mcp's strength** is the agent-facing tool surface — accessibility-tree primacy, response-diffs, trust-wrappers, ref-based poka-yoke, virtual sandbox, extensible architecture. These are *agent engineering features* that come from optimising for the model's attention budget rather than the user's UI flow.
 
 **On the same Linux machine, given identical safety polish (post-ADR-0007), kde-mcp is the better agent-facing design** for the structural reasons above. The 4–5× token reduction on multi-step workflows, the deterministic AT-SPI invocations, and the sandboxed virtual mode are real, measurable, OS-independent advantages.
 

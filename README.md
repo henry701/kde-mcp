@@ -21,8 +21,8 @@ For the full side-by-side with Anthropic's macOS `computer-use`, see [`docs/comp
 ## Architecture
 
 - **Three transports** in one binary: stdio, Streamable-HTTP, and a Unix domain socket.
-- **Singleton daemon.** The HTTP transport runs as a systemd-user service on `127.0.0.1:7575` with socket activation and idle-stop, so multiple agent sessions share one process (one tray icon, one AT-SPI subscription) instead of contending. The loopback bind is the trust boundary. (ADR-0011, ADR-0012, ADR-0015)
-- **Audited dispatch.** Every tool call writes one structured audit record; untrusted external strings are carried with an explicit `trust` tag so the agent can tell apart what it authored from what the screen returned. (ADR-0008)
+- **Singleton daemon.** The daemon runs as a systemd-user service with socket activation and idle-stop, so multiple agent sessions share one process (one tray icon, one AT-SPI subscription) instead of contending. The preferred transport is a Unix domain socket with `0600` permissions; an HTTP transport on `127.0.0.1:7575` is the current default only because some MCP clients can't yet speak `unix://` (there, the loopback bind is the trust boundary). (ADR-0011, ADR-0012, ADR-0015)
+- **Audited dispatch.** Every tool call writes one structured audit record; untrusted external strings are carried with a three-level `trust` tag (trusted / agent-authored / external) so the agent can tell apart what it authored from what the screen returned. (ADR-0008)
 
 ## Install
 

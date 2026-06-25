@@ -72,7 +72,7 @@ sentinel = "shell_access"
 # ─── IDEs / editors with command palettes ──────────────────────────────────
 # Same reasoning as terminals: typing into a Ctrl+P / Ctrl+Shift+P command
 # palette can execute arbitrary actions. Route deliberate file edits through
-# `text_editor.edit` instead.
+# the host's own editor tools instead.
 [apps."code-oss"]
 tier = "click_only"
 
