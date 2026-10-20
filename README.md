@@ -51,7 +51,7 @@ packaging/            .desktop authorization, systemd-user units, policy.toml ex
 
 ## Development
 
-Contributors and AI coding agents: read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENTS.md`](AGENTS.md) before opening a PR. The short version: Conventional Commits, `cargo fmt` + `cargo clippy --workspace --all-targets -- -D warnings` + `cargo test --workspace` must be clean before every commit, no `unwrap()`/`expect()` on user-reachable paths, and one ADR per non-obvious decision.
+Contributors and AI coding agents: read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENTS.md`](AGENTS.md) before opening a PR. The short version: Conventional Commits, `cargo fmt` + `cargo clippy --workspace --all-targets -- -D warnings` + `./scripts/test.sh` must be clean before every commit, no `unwrap()`/`expect()` on user-reachable paths, and one ADR per non-obvious decision.
 
 ## License
 

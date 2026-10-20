@@ -11,7 +11,7 @@ Thanks for your interest. This is a small project with a strong, opinionated des
 
 The full development guide — build commands, the pre-commit quality gate, code style, the design principles, and the ADR workflow — lives in [`AGENTS.md`](AGENTS.md). Please read it before opening a PR. The essentials:
 
-- `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` must all be clean before every commit.
+- `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, and `./scripts/test.sh` must all be clean before every commit.
 - Conventional Commits (`type(scope): subject`); commit bodies explain *why*.
 - No `unwrap()`/`expect()` on user-reachable paths.
 - Every destructive tool routes through the policy gate — never bypass it.

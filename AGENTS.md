@@ -6,11 +6,12 @@ Guidance for anyone — human or AI coding agent — making changes to kde-mcp. 
 
 ```sh
 cargo build                                              # build
-cargo test --workspace                                   # run the test suite
+./scripts/test.sh                                        # run the isolated test suite
 cargo run -- --mode=virtual                              # drive a headless KWin session (safe for dev)
 ./packaging/install.sh                                   # install systemd-user units + .desktop authorization
 ```
 
+- Use `./scripts/test.sh` instead of bare `cargo test`: it supplies a private D-Bus session, temporary XDG state, and no display connection. Approval tests invoke real notification code and otherwise send prompts to your desktop. Forward Cargo test filters/options to the runner. Live desktop smoke checks remain separate and deliberate.
 - Platform: KDE Plasma 6 on Wayland (KWin). The tools talk to live KDE D-Bus interfaces, so most integration behaviour only reproduces on that stack.
 - For anything that drives input or windows, develop against `--mode=virtual`, not your real session.
 - System dependencies (libei, at-spi2-core, wl-clipboard, tesseract, …) are listed in `packaging/README-install.md`.
@@ -20,7 +21,7 @@ cargo run -- --mode=virtual                              # drive a headless KWin
 ```sh
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+./scripts/test.sh
 ```
 
 All three must be clean. CI will reject anything that isn't.
