@@ -12,13 +12,19 @@ pub async fn notify_lease_acquired(mode: &str) {
         _ => "your desktop",
     };
     let body = format!("kde-mcp is controlling {mode_descriptor}. Press Meta+Esc to abort.");
-    fire_blocking("Claude is using your computer", body, Urgency::Normal, 5000).await;
+    fire_blocking(
+        "KDE MCP is using your computer",
+        body,
+        Urgency::Normal,
+        5000,
+    )
+    .await;
 }
 
 pub async fn notify_lease_released(mode: &str) {
     let body = format!("kde-mcp finished using {mode} mode.");
     fire_blocking(
-        "Claude finished using your computer",
+        "KDE MCP finished using your computer",
         body,
         Urgency::Low,
         3000,
@@ -50,8 +56,8 @@ pub async fn request_app_approval(
     // notify-rust's `.show()` is sync and creates a zbus Connection it owns.
     let handle: NotificationHandle = match tokio::task::spawn_blocking(move || {
         Notification::new()
-            .summary(&format!("Allow Claude to control {app_for_show}?"))
-            .body("Claude is requesting permission to send input to this app.")
+            .summary(&format!("Allow KDE MCP to control {app_for_show}?"))
+            .body("KDE MCP is requesting permission to send input to this app.")
             .appname("kde-mcp")
             .hint(Hint::Urgency(Urgency::Critical))
             .action("approve-session", "Allow this session")
@@ -108,10 +114,10 @@ pub async fn request_app_approval(
     Some(id)
 }
 
-/// Fire the "Claude aborted by user" notification when Meta+Esc is pressed.
+/// Fire the cancellation notification when Meta+Esc is pressed.
 pub async fn notify_cancelled() {
     fire_blocking(
-        "Claude aborted by user",
+        "KDE MCP aborted by user",
         "All in-flight tool calls have been cancelled.".to_string(),
         Urgency::Normal,
         3000,

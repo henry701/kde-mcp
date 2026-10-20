@@ -1,7 +1,7 @@
 //! System tray indicator + abort menu via `org.kde.StatusNotifierItem`.
 //!
 //! The tray icon appears in KDE's system tray (and any compatible
-//! freedesktop tray host). It's the persistent "Claude is doing something"
+//! freedesktop tray host). It's the persistent "KDE MCP is doing something"
 //! indicator — colour changes to active when a tool is in flight, tooltip
 //! shows the tool name. Right-click menu has "Abort current operation" and
 //! "Quit".

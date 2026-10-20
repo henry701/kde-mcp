@@ -21,7 +21,7 @@ const QT_MOD_META: i32 = 0x10000000;
 const META_ESCAPE: i32 = QT_KEY_ESCAPE | QT_MOD_META;
 
 const COMPONENT_UNIQUE: &str = "kde-mcp";
-const COMPONENT_FRIENDLY: &str = "kde-mcp (Claude desktop control)";
+const COMPONENT_FRIENDLY: &str = "kde-mcp (desktop control)";
 const ACTION_UNIQUE: &str = "cancel";
 const ACTION_FRIENDLY: &str = "Abort current operation";
 

@@ -1,6 +1,6 @@
 # ADR-0007: Adopt Anthropic computer-use safety architecture
 
-**Status:** Accepted
+**Status:** Accepted; per-app approval amended by ADR-0016
 **Date:** 2026-05-13
 **Deciders:** atassis
 

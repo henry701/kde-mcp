@@ -14,7 +14,8 @@
 //! 5. **Per-app approval** — in-memory `HashMap<class, ApprovalState>`.
 //!    First call against an unapproved app emits a KDE notification with
 //!    Allow/Deny action buttons; returns `app_approval_required`. Caller
-//!    retries after the user picks.
+//!    retries after the user picks. Operator-set `auto_approve` skips the
+//!    prompt; explicit denials still apply.
 //! 6. **Sentinel warning emission** — when the app's policy entry has
 //!    `sentinel = "shell_access" | ...`, attaches a non-blocking warning
 //!    to the caller's response (returned via [`GateOutcome::Ok::warnings`]).
@@ -79,6 +80,9 @@ pub struct AppPolicy {
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct PolicyConfig {
+    /// Operator opt-in: approve apps without a notification; other checks remain.
+    #[serde(default)]
+    pub auto_approve: bool,
     #[serde(default)]
     pub apps: HashMap<String, AppPolicy>,
 }
@@ -310,11 +314,11 @@ impl PolicyGate {
                 // "once" consumed; next call re-prompts.
             }
             Some(ApprovalState::Denied) => {
-                approvals.remove(&class);
                 return Err(ToolError::PermissionDenied {
                     reason: format!("user previously denied {class}"),
                 });
             }
+            Some(ApprovalState::Pending) | None if self.config.auto_approve => {}
             Some(ApprovalState::Pending) | None => {
                 approvals.insert(class.clone(), ApprovalState::Pending);
                 drop(approvals);
@@ -414,6 +418,77 @@ mod tests {
 
     fn empty_gate() -> PolicyGate {
         PolicyGate::new_ephemeral(PolicyConfig::default(), CancellationToken::new())
+    }
+
+    fn auto_gate(extra: &str, token: CancellationToken) -> PolicyGate {
+        let config = toml::from_str(&format!("auto_approve = true\n{extra}")).unwrap();
+        PolicyGate::new_ephemeral(config, token)
+    }
+
+    #[tokio::test]
+    async fn auto_approval_accepts_a_new_app_without_a_prompt() {
+        let gate = auto_gate("", CancellationToken::new());
+        gate.check(TargetApp::Class("new-app".into()), Action::Generic)
+            .await
+            .unwrap();
+        assert!(gate.approvals.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn auto_approval_preserves_tiers_and_sentinel_warnings() {
+        let gate = auto_gate(
+            "[apps.viewer]\ntier = 'view_only'\n[apps.terminal]\ntier = 'click_only'\nsentinel = 'shell_access'",
+            CancellationToken::new(),
+        );
+        assert_eq!(
+            gate.check(TargetApp::Class("viewer".into()), Action::Generic)
+                .await
+                .unwrap_err()
+                .code(),
+            "tier_restricted"
+        );
+        assert_eq!(
+            gate.check(TargetApp::Class("terminal".into()), Action::KeyboardType)
+                .await
+                .unwrap_err()
+                .code(),
+            "tier_restricted"
+        );
+        let warnings = gate
+            .check(TargetApp::Class("terminal".into()), Action::Generic)
+            .await
+            .unwrap();
+        assert!(warnings[0].contains("shell access"));
+    }
+
+    #[tokio::test]
+    async fn auto_approval_preserves_cancellation() {
+        let token = CancellationToken::new();
+        let gate = auto_gate("", token.clone());
+        token.cancel();
+        assert_eq!(
+            gate.check(TargetApp::Class("new-app".into()), Action::Generic)
+                .await
+                .unwrap_err()
+                .code(),
+            "cancelled"
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_approval_does_not_override_an_explicit_denial() {
+        let gate = auto_gate("", CancellationToken::new());
+        gate.record_approval("denied-app", ApprovalDecision::Deny)
+            .await;
+        for _ in 0..2 {
+            assert_eq!(
+                gate.check(TargetApp::Class("denied-app".into()), Action::Generic)
+                    .await
+                    .unwrap_err()
+                    .code(),
+                "permission_denied"
+            );
+        }
     }
 
     #[tokio::test]

@@ -72,6 +72,22 @@ cargo install --path . --root ~/.local
 
 This puts `kde-mcp` at `~/.local/bin/kde-mcp`. Make sure `~/.local/bin` is on your `PATH`.
 
+## Optional unattended app approval
+
+By default, the first mutation against an unapproved app asks for permission.
+To approve apps automatically, add this top-level setting to
+`~/.config/kde-mcp/policy.toml` before any `[apps.*]` tables:
+
+```toml
+auto_approve = true
+```
+
+Restart the daemon after changing the file. App tiers, sentinel warnings,
+Meta+Esc cancellation, the mutation lease, and audit logging still apply.
+Explicit in-memory denials remain denied until the daemon restarts. Set the
+option to `false` or remove it to restore interactive approval. Runtime prompts
+identify the service as KDE MCP because the daemon can serve different clients.
+
 ## Authorize the ScreenShot2 D-Bus interface
 
 KWin requires the binary to have an installed `.desktop` file declaring its right to call the screenshot interface. From the repo root:
