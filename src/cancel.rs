@@ -3,7 +3,7 @@
 //! The shortcut is registered with `org.kde.kglobalaccel` so KWin grabs the
 //! key at compositor level (prompt-injection-safe — apps never see it).
 //! When the user presses Meta+Esc, kglobalaccel fires
-//! `globalShortcutPressed` on `/component/kde-mcp`; we listen for that and
+//! `globalShortcutPressed` on the component path returned by KDE; we listen and
 //! flip the `CancellationToken` shared with the policy gate.
 //!
 //! Registration is best-effort. If kglobalaccel rejects (already-registered
@@ -41,6 +41,12 @@ trait KGlobalAccel {
         keys: Vec<i32>,
         flags: u32,
     ) -> zbus::Result<Vec<i32>>;
+
+    #[zbus(name = "getComponent")]
+    fn get_component(
+        &self,
+        component_unique: &str,
+    ) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
 }
 
 #[zbus::proxy(
@@ -95,8 +101,8 @@ async fn register_kglobalaccel(
     let kga = KGlobalAccelProxy::new(bus).await?;
     let action_id = vec![
         COMPONENT_UNIQUE,
-        COMPONENT_FRIENDLY,
         ACTION_UNIQUE,
+        COMPONENT_FRIENDLY,
         ACTION_FRIENDLY,
     ];
     // doRegister is idempotent for an already-registered component — it
@@ -106,10 +112,15 @@ async fn register_kglobalaccel(
     // (mark as the current shortcut). KGlobalAccelD::SetShortcutFlag enum in
     // KDE source. Using NoAutoloading|SetPresent so we set Meta+Esc even if
     // user previously rebound something.
-    let _granted = kga.set_shortcut(action_id, vec![META_ESCAPE], 0x6).await?;
+    let granted = kga.set_shortcut(action_id, vec![META_ESCAPE], 0x6).await?;
+    if !granted.contains(&META_ESCAPE) {
+        return Err(zbus::Error::Failure(
+            "KGlobalAccel did not grant Meta+Esc".into(),
+        ));
+    }
 
-    // Listen for the press signal on /component/kde-mcp.
-    let component_path = format!("/component/{COMPONENT_UNIQUE}");
+    // Component IDs may contain characters that are invalid in D-Bus paths.
+    let component_path = kga.get_component(COMPONENT_UNIQUE).await?;
     let component = ComponentProxy::builder(bus)
         .path(component_path)?
         .build()
@@ -127,4 +138,105 @@ async fn register_kglobalaccel(
         // stop, full stop.
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::process::{Child, Command, Stdio};
+    use zbus::object_server::SignalEmitter;
+
+    struct PrivateBus(Child);
+
+    impl Drop for PrivateBus {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    struct Accelerator;
+
+    #[zbus::interface(name = "org.kde.KGlobalAccel")]
+    impl Accelerator {
+        #[zbus(name = "doRegister")]
+        fn do_register(&self, action_id: Vec<String>) -> zbus::fdo::Result<()> {
+            if action_id
+                != [
+                    COMPONENT_UNIQUE,
+                    ACTION_UNIQUE,
+                    COMPONENT_FRIENDLY,
+                    ACTION_FRIENDLY,
+                ]
+            {
+                return Err(zbus::fdo::Error::InvalidArgs(
+                    "incorrect action ID order".into(),
+                ));
+            }
+            Ok(())
+        }
+
+        #[zbus(name = "setShortcut")]
+        fn set_shortcut(&self, _action_id: Vec<String>, keys: Vec<i32>, _flags: u32) -> Vec<i32> {
+            keys
+        }
+
+        #[zbus(name = "getComponent")]
+        fn get_component(&self, _component_unique: String) -> zbus::zvariant::OwnedObjectPath {
+            "/component/kde_mcp".try_into().unwrap()
+        }
+    }
+
+    struct Shortcut;
+
+    #[zbus::interface(name = "org.kde.kglobalaccel.Component")]
+    impl Shortcut {
+        #[zbus(signal, name = "globalShortcutPressed")]
+        async fn global_shortcut_pressed(
+            emitter: &SignalEmitter<'_>,
+            component_unique: &str,
+            shortcut_unique: &str,
+            timestamp: i64,
+        ) -> zbus::Result<()>;
+    }
+
+    #[tokio::test]
+    async fn registration_uses_kde_action_order_and_resolved_component_path() {
+        let mut daemon = Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address=1"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut address = String::new();
+        BufReader::new(daemon.stdout.take().unwrap())
+            .read_line(&mut address)
+            .unwrap();
+        let _daemon = PrivateBus(daemon);
+        let server = zbus::connection::Builder::address(address.trim())
+            .unwrap()
+            .name("org.kde.kglobalaccel")
+            .unwrap()
+            .serve_at("/kglobalaccel", Accelerator)
+            .unwrap()
+            .serve_at("/component/kde_mcp", Shortcut)
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let client = zbus::connection::Builder::address(address.trim())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let token = CancellationToken::new();
+        register_kglobalaccel(&client, token.clone()).await.unwrap();
+        let emitter = SignalEmitter::new(&server, "/component/kde_mcp").unwrap();
+        Shortcut::global_shortcut_pressed(&emitter, COMPONENT_UNIQUE, ACTION_UNIQUE, 1)
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), token.cancelled())
+            .await
+            .unwrap();
+    }
 }
